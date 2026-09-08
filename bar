@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-
 set -e
 
 AUR_RPC_URL="https://aur.archlinux.org/rpc/?v=5&type="
@@ -17,22 +16,29 @@ print_usage() {
     exit 1
 }
 
+############################################
+# SEARCH AUR + REPO
+############################################
 aur_search() {
     local query="$1"
     echo -e "\033[1;34m::\033[0m Searching official repos..."
     pacman -Ss "$query" || true
     
     echo -e "\n\033[1;34m::\033[0m Searching AUR..."
-    if ! command -v jq &> /dev/null; then
+
+    if ! command -v jq &>/dev/null; then
         echo "Error: 'jq' is required for AUR search."
         exit 1
     fi
 
     local response
     response=$(curl -s "${AUR_RPC_URL}search&arg=${query}")
-    
+
     local mapfile_output
-    IFS=$'\n' read -r -d '' -a mapfile_output < <(echo "$response" | jq -r '.results[] | "\(.Name)|:\(.Version)|:\(.Description)"' && printf '\0' ) || true
+    IFS=$'\n' read -r -d '' -a mapfile_output < <(
+        echo "$response" | jq -r '.results[] | "\(.Name)|:\(.Version)|:\(.Description)"'
+        printf '\0'
+    ) || true
 
     if [ ${#mapfile_output[@]} -eq 0 ]; then
         echo "No AUR matches found."
@@ -48,7 +54,7 @@ aur_search() {
         count=$((count + 1))
     done
 
-    echo -e "\n\033[1;33m=>\033[0m Enter numbers to install (separated by spaces, e.g., 1 3 5), or press Enter to exit:"
+    echo -e "\n\033[1;33m=>\033[0m Enter numbers to install (e.g., 1 3 5), or press Enter to exit:"
     read -r -a choices
 
     if [ ${#choices[@]} -eq 0 ]; then
@@ -69,23 +75,23 @@ aur_search() {
     fi
 }
 
+############################################
+# INSTALL AUR PACKAGE
+############################################
 aur_install() {
     local packages=("$@")
-    
+
     for pkg in "${packages[@]}"; do
         if pacman -Si "$pkg" &>/dev/null; then
-            echo -e "\n\033[1;34m::\033[0m Found '$pkg' in official repositories. Installing via pacman..."
+            echo -e "\n\033[1;34m::\033[0m Found '$pkg' in official repos. Installing via pacman..."
             sudo pacman -S "$pkg"
             continue
         fi
 
         local target_dir="${BUILD_DIR}/${pkg}"
         echo -e "\n\033[1;34m::\033[0m Processing AUR package: \033[1;32m$pkg\033[0m"
-        
-        if [ -d "$target_dir" ]; then
-            rm -rf "$target_dir"
-        fi
 
+        rm -rf "$target_dir"
         if ! git clone "${AUR_GIT_URL}/${pkg}.git" "$target_dir" &>/dev/null; then
             echo -e "\033[1;31mError:\033[0m '$pkg' not found in repos or AUR."
             exit 1
@@ -96,8 +102,23 @@ aur_install() {
 
         echo -e "\033[1;33m=>\033[0m Review PKGBUILD for $pkg? [Y/n]"
         read -r answer
+
         if [[ "$answer" =~ ^[Yy]$ ]] || [ -z "$answer" ]; then
-            ${PAGER:-less} PKGBUILD
+            # Find PKGBUILD safely
+            local PKGFILE
+            PKGFILE=$(find . -maxdepth 2 -type f -name PKGBUILD | head -n 1)
+
+            if [ -z "$PKGFILE" ]; then
+                echo -e "\033[1;31mError:\033[0m No PKGBUILD found in repository."
+                ls -al
+            else
+                if command -v ${PAGER:-less} >/dev/null 2>&1; then
+                    ${PAGER:-less} "$PKGFILE" || true
+                else
+                    echo -e "\033[1;33mWarning:\033[0m PAGER '${PAGER}' not found. Using 'cat'."
+                    cat "$PKGFILE"
+                fi
+            fi
         fi
 
         echo -e "\033[1;34m::\033[0m Running makepkg..."
@@ -107,12 +128,16 @@ aur_install() {
     done
 }
 
+############################################
+# SYSTEM + AUR UPDATE
+############################################
 sys_update() {
-    echo -e "\033[1;34m::\033[0m Synchronizing repository databases and updating system..."
+    echo -e "\033[1;34m::\033[0m Updating system..."
     sudo pacman -Syu
 
-    echo -e "\n\033[1;34m::\033[0m Checking AUR for updates..."
-    if ! command -v jq &> /dev/null; then
+    echo -e "\n\033[1;34m::\033[0m Checking AUR updates..."
+
+    if ! command -v jq &>/dev/null; then
         echo "Error: 'jq' is required to check AUR updates."
         exit 1
     fi
@@ -151,31 +176,37 @@ sys_update() {
     fi
 }
 
+############################################
+# CLEAN CACHE
+############################################
 clean_cache() {
     echo -e "\033[1;34m::\033[0m Found AUR build cache directory: $BUILD_DIR"
     local size=$(du -sh "$BUILD_DIR" 2>/dev/null | awk '{print $1}')
     echo -e "\033[1;34m::\033[0m Current cache size: \033[1;33m${size:-0B}\033[0m"
-    echo -e "\033[1;33m=>\033[0m Do you want to remove all files in the build directory? [y/N]"
+    echo -e "\033[1;33m=>\033[0m Remove all files in the build directory? [y/N]"
     read -r answer
     if [[ "$answer" =~ ^[Yy]$ ]]; then
         rm -rf "${BUILD_DIR:?}"/*
-        echo -e "\033[1;32m::\033[0m Cache cleared successfully."
+        echo -e "\033[1;32m::\033[0m Cache cleared."
     else
         echo "Operation cancelled."
     fi
 }
 
+############################################
+# MAIN
+############################################
 if [ $# -lt 1 ]; then
     print_usage
 fi
 
 case "$1" in
     -Ss)
-        if [ -z "$2" ]; then print_usage; fi
+        [ -z "$2" ] && print_usage
         aur_search "$2"
         ;;
     -S)
-        if [ -z "$2" ]; then print_usage; fi
+        [ -z "$2" ] && print_usage
         aur_install "${@:2}"
         ;;
     -Syu)
